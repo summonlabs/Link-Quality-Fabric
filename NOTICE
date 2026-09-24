@@ -1,0 +1,19 @@
+Link Quality Fabric
+
+Copyright 2026 Summon Software Labs.
+
+Link Quality Fabric is an open-source, vendor-neutral runtime for evidence-backed
+signal, error, degradation and quality state beyond binary link up/down. It
+reports the quality state a link, generation, interval and evidence set actually
+support, what changed, and how certain and fresh that conclusion is.
+
+This product is licensed under the Apache License, Version 2.0. See the
+LICENSE file in this distribution for the full license text.
+
+Link Quality Fabric does not collect or transmit any telemetry. All state is
+written to local files chosen by the operator and never leaves the machine
+running the software.
+
+Link Quality Fabric accepts contributions from individuals and organizations on
+the terms of the Apache License 2.0 without requiring a Contributor License
+Agreement (CLA). See CONTRIBUTING.md for contribution guidance.

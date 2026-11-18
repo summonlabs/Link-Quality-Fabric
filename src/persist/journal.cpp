@@ -779,6 +779,13 @@ Status BackgroundJournal::compact(IngestOrdinal snapshot_ordinal, std::string sn
   }
   if (!status.ok() && file_ == nullptr) {
     file_ = open_file(config_.path, "r+b");
+    // The journal is untouched by a failed compaction and is reopened for
+    // append. Records are written at the current position, which "r+b" puts at
+    // the start, so the next record overwrote the file header.
+    if (file_ != nullptr && seek_file(file_, 0, SEEK_END) != 0) {
+      std::fclose(file_);
+      file_ = nullptr;
+    }
     if (file_ == nullptr) {
       failed_ = true;
       failure_ = status;
@@ -853,13 +860,29 @@ u64 BackgroundJournal::file_size_bytes() const {
 
 Status replace_file_atomically(const std::string& temporary_path, const std::string& final_path) {
 #if defined(_WIN32)
-  if (MoveFileExA(temporary_path.c_str(), final_path.c_str(),
-                  MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) == 0) {
-    return Status::error(StatusCode::Io,
-                         "atomic replace failed with error " +
-                             text::format_u64(static_cast<u64>(GetLastError())));
+  // While a reader has the target open (an inspection, a backup, an antivirus
+  // or indexing scan) the replace fails until the reader closes the file, so it
+  // is retried for a bounded time (about 2 s). A directory in the way is not
+  // transient and fails at once.
+  for (int attempt = 0;; ++attempt) {
+    if (MoveFileExA(temporary_path.c_str(), final_path.c_str(),
+                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0) {
+      return Status::success();
+    }
+    const DWORD error = GetLastError();
+    const DWORD attributes = GetFileAttributesA(final_path.c_str());
+    const bool directory =
+        attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+    const bool transient = (error == ERROR_ACCESS_DENIED || error == ERROR_SHARING_VIOLATION ||
+                            error == ERROR_LOCK_VIOLATION) &&
+                           !directory;
+    if (!transient || attempt >= 100) {
+      return Status::error(StatusCode::Io,
+                           "atomic replace failed with error " +
+                               text::format_u64(static_cast<u64>(error)));
+    }
+    Sleep(20);
   }
-  return Status::success();
 #else
   if (std::rename(temporary_path.c_str(), final_path.c_str()) != 0) {
     return Status::error(StatusCode::Io, "atomic replace failed");

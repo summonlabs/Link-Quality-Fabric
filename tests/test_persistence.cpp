@@ -13,9 +13,11 @@
 
 #include "harness.hpp"
 
+#include <chrono>
 #include <cstdio>
 #include <fstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 using namespace lqf;
@@ -386,4 +388,78 @@ LQF_TEST(persistence, disabled_persistence_is_refused_explicitly) {
   LQF_CHECK(fabric.value()->compact().code() == StatusCode::Refused);
   LQF_CHECK(!fabric.value()->stats().journal_enabled);
   LQF_CHECK_STATUS_OK(fabric.value()->close());
+}
+
+LQF_TEST(persistence, compaction_waits_for_a_reader_of_the_journal) {
+  TempDir directory("compact-reader");
+  const std::string path = directory.file("state.lqf");
+  const LinkIdentity link(LinkId(std::string("link-r")), LinkGeneration(1));
+  const SourceIdentity source(SourceId(std::string("src-r")), SourceIncarnation(1));
+  Outcome<Persisted> persisted = open_persisted(path);
+  LQF_CHECK_STATUS_OK(persisted.status());
+  const std::shared_ptr<Fabric> fabric = persisted.value().fabric;
+  LQF_CHECK_STATUS_OK(fabric->declare_capability(make_capability(link, source, {kRxLevel})));
+  LQF_CHECK_STATUS_OK(fabric->ingest(make_gauge(link, source, kRxLevel, -3.0, 1,
+                                                1'700'000'000'000'000'000LL, Unit::DecibelMilliwatt)));
+  LQF_CHECK_STATUS_OK(fabric->flush());
+  bool reader_opened = false;
+  bool compacted = false;
+  {
+    // Another tool reading the store (an inspection, a backup or antivirus
+    // scan) holds the journal open while the compaction replaces it, and closes
+    // it shortly after.
+    std::ifstream reader(path, std::ios::binary);
+    reader_opened = reader.is_open();
+    std::thread compactor([&fabric, &compacted] { compacted = fabric->compact().ok(); });
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    reader.close();
+    compactor.join();
+  }
+  LQF_CHECK(reader_opened);
+  // The replacement waits for the reader instead of failing the compaction.
+  LQF_CHECK(compacted);
+  LQF_CHECK_STATUS_OK(fabric->close());
+}
+
+LQF_TEST(persistence, a_failed_compaction_keeps_appending_at_the_end) {
+  TempDir directory("compact-failed");
+  const std::string path = directory.file("state.lqf");
+  const LinkIdentity link(LinkId(std::string("link-f")), LinkGeneration(1));
+  const SourceIdentity source(SourceId(std::string("src-f")), SourceIncarnation(1));
+  {
+    Outcome<Persisted> persisted = open_persisted(path);
+    LQF_CHECK_STATUS_OK(persisted.status());
+    const std::shared_ptr<Fabric> fabric = persisted.value().fabric;
+    LQF_CHECK_STATUS_OK(fabric->declare_capability(make_capability(link, source, {kRxLevel})));
+    LQF_CHECK_STATUS_OK(fabric->ingest(make_gauge(link, source, kRxLevel, -3.0, 1,
+                                                  1'700'000'000'000'000'000LL,
+                                                  Unit::DecibelMilliwatt)));
+    LQF_CHECK_STATUS_OK(fabric->flush());
+    bool compaction_failed = false;
+    {
+      // A reader that keeps the journal open past the replacement's retry
+      // bound (about 2 s) makes the compaction fail.
+      std::ifstream reader(path, std::ios::binary);
+      LQF_CHECK(reader.is_open());
+      compaction_failed = !fabric->compact().ok();
+    }
+    LQF_CHECK(compaction_failed);
+    // The journal stays usable: the next record goes after the existing ones.
+    LQF_CHECK_STATUS_OK(fabric->ingest(make_gauge(link, source, kRxLevel, -4.0, 2,
+                                                  1'700'000'001'000'000'000LL,
+                                                  Unit::DecibelMilliwatt)));
+    LQF_CHECK_STATUS_OK(fabric->flush());
+    LQF_CHECK_STATUS_OK(fabric->close());
+  }
+  // The journal was reopened at offset 0 after the failed compaction, so the
+  // next record overwrote the file header and the store did not reopen.
+  Outcome<Persisted> reopened = open_persisted_with_epoch(path, 0x5EEDULL);
+  LQF_CHECK_STATUS_OK(reopened.status());
+  WindowQuery window;
+  window.link = link;
+  window.limit = 4096;
+  Outcome<WindowResult> records = reopened.value().fabric->window(window);
+  LQF_CHECK(records.ok());
+  LQF_CHECK_EQ(records.value().records.size(), static_cast<std::size_t>(2));
+  LQF_CHECK_STATUS_OK(reopened.value().fabric->close());
 }

@@ -23,6 +23,7 @@
 #include "lqf/core/hash.hpp"
 #include "lqf/transport/client.hpp"
 #include "lqf/transport/server.hpp"
+#include "lqf/transport/socket.hpp"
 
 using namespace lqf;
 using namespace lqf::test;
@@ -287,4 +288,15 @@ LQF_TEST(transport, unconnected_client_is_refused_cleanly) {
   const Outcome<FabricClient> refused = FabricClient::connect(config);
   LQF_CHECK(!refused.ok());
   LQF_CHECK(!refused.status().message().empty());
+}
+
+LQF_TEST(transport, a_second_listener_cannot_take_a_listening_port) {
+  u16 port = 0;
+  Outcome<Socket> first = Socket::listen_loopback(0, 4, port);
+  LQF_CHECK_STATUS_OK(first.status());
+  LQF_CHECK(port != 0);
+  u16 second_port = 0;
+  Outcome<Socket> second = Socket::listen_loopback(port, 4, second_port);
+  // Two fabrics must never share one listening port: the second bind fails.
+  LQF_CHECK(!second.ok());
 }

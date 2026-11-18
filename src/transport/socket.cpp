@@ -125,8 +125,15 @@ Outcome<Socket> Socket::listen_loopback(u16 port, int backlog, u16& bound_port) 
 #endif
   Socket socket(from_native(handle));
   int reuse = 1;
+#if defined(_WIN32)
+  // SO_REUSEADDR on Windows lets a second socket bind a port that is still
+  // listening; exclusive use makes that second bind fail instead.
+  (void)::setsockopt(to_native(socket.handle_), SOL_SOCKET, SO_EXCLUSIVEADDRUSE,
+                     reinterpret_cast<const char*>(&reuse), sizeof(reuse));
+#else
   (void)::setsockopt(to_native(socket.handle_), SOL_SOCKET, SO_REUSEADDR,
                      reinterpret_cast<const char*>(&reuse), sizeof(reuse));
+#endif
 
   sockaddr_in address{};
   address.sin_family = AF_INET;

@@ -41,7 +41,10 @@ function(lqf_apply_warnings target)
 
   if(LQF_SANITIZE)
     if(MSVC)
-      target_compile_options(${target} PRIVATE "/fsanitize=${LQF_SANITIZE}")
+      # Debug information is required: without it MSVC warns C5072 for every
+      # source, which LQF_WARNINGS_AS_ERRORS turns into an error.
+      target_compile_options(${target} PRIVATE "/fsanitize=${LQF_SANITIZE}" /Zi)
+      target_link_options(${target} PRIVATE /INCREMENTAL:NO /DEBUG)
     else()
       target_compile_options(${target} PRIVATE "-fsanitize=${LQF_SANITIZE}" -fno-omit-frame-pointer)
       target_link_options(${target} PRIVATE "-fsanitize=${LQF_SANITIZE}")
